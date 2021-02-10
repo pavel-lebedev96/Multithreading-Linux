@@ -7,18 +7,39 @@
 /*пять магазинов*/
 static unsigned int stores[5];
 
-/*мьютекс для синхронизации потоков*/
-static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
+/*мьютекс для синхронизации потоков (для каждого магазина)*/
+static pthread_mutex_t store_mtx[5];
+
+/*мьютекс для синхронизации функции rand*/
+static pthread_mutex_t rand_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 /*флаг для остановки потока погрузчика при присоединении всех потоков покупателей*/
 static bool stop = false;
+
+/*возращает случайное число из отрезка [a, b], потокобезопасная*/
+static int random(int a, int b)
+{
+	int res;
+	
+	/*закрытие мьютекса*/
+	if (pthread_mutex_lock(&rand_mtx) != 0)
+		pthread_exit((void *)1);
+	
+	res = a + rand() % (b - a + 1);
+
+	/*открытие мьютекса*/
+	if (pthread_mutex_unlock(&rand_mtx) != 0)
+		pthread_exit((void*)1);
+
+	return res;
+}
 
 /*функция для потока погрузчика*/
 static void* loader(void* arg)
 {
 	/*количество товара*/
 	unsigned int goods_num;
-	
+
 	/*номер магазина*/
 	unsigned int n_store;
 
@@ -28,44 +49,46 @@ static void* loader(void* arg)
 		/*проверка, если другие потоки завершили свою работу*/
 		if (stop)
 			return 0;
-		
-		/*закрытие мьютекса*/
-		if (pthread_mutex_lock(&mtx) != 0)
-			return (void *) 1;
-		
+
 		/*выбор количества товара от 300 до 500*/
-		goods_num = (unsigned int) (300 + rand() % 201);
+		goods_num = (unsigned int) random(300, 500);
 		/*выбор магазина*/
-		n_store = (unsigned int) rand() % 5;
-		stores[n_store] += goods_num;
+		n_store = (unsigned int) random(0, 4);
 		
-		/*открытие мьютекса*/		
-		if (pthread_mutex_unlock(&mtx) != 0)
-			return (void *) 1;
+		/*закрытие n_store мьютекса*/
+		if (pthread_mutex_lock(&store_mtx[n_store]) != 0)
+			return (void*)1;
+		
+		stores[n_store] += goods_num;
+
+		/*открытие n_store мьютекса*/
+		if (pthread_mutex_unlock(&store_mtx[n_store]) != 0)
+			return (void*)1;
 
 		/*приостановка потока на 1 секунду*/
 		sleep(1);
 	}
-	
+
 }
 
 /*функция для потоков покупателей, arg - потребность покупателя*/
 static void* customer(void* arg)
 {
 	/*потребность покупателя*/
-	unsigned int need = (unsigned int) arg;
-	
+	unsigned int need = (unsigned int)arg;
+
 	/*номер магазина*/
 	unsigned int n_store;
-		
+
 	for (;;)
 	{
-		/*закрытие мьютекса*/
-		if (pthread_mutex_lock(&mtx) != 0)
-			return (void *) 1;
-		
 		/*выбор магазина*/
-		n_store = (unsigned int) (rand() % 5);
+		n_store = (unsigned int) random(0, 4);
+		
+		/*закрытие n_store мьютекса*/
+		if (pthread_mutex_lock(&store_mtx[n_store]) != 0)
+			return (void*)1;
+		
 		/*пока в магазине есть товар*/
 		while (stores[n_store] != 0)
 		{
@@ -78,16 +101,17 @@ static void* customer(void* arg)
 			else
 			{
 				/*иначе завершить процесс*/
-				if (pthread_mutex_unlock(&mtx) != 0)
-					return (void *) 1;
+				/*открытие n_store мьютекса*/
+				if (pthread_mutex_unlock(&store_mtx[n_store]) != 0)
+					return (void*)1;
 				return 0;
 			}
 		}
-		
-		/*открытие мьютекса*/
-		if (pthread_mutex_unlock(&mtx) != 0)
-			return (void *) 1;
-		
+
+		/*открытие n_store мьютекса*/
+		if (pthread_mutex_unlock(&store_mtx[n_store]) != 0)
+			return (void*)1;
+
 		/*приостановка потока на 3 секунды*/
 		sleep(3);
 	}
@@ -96,16 +120,23 @@ static void* customer(void* arg)
 /*главный поток*/
 int main(int argc, char* argv[])
 {
-	pthread_t loader_thread, customer_thread[3];
+	printf("The program is running\n");
 	
+	/*идентификаторы потоков*/
+	pthread_t loader_thread, customer_thread[3];
+
 	/*инициализация ГСЧ*/
 	srand((unsigned)time(NULL));
 	
-	printf("The program is running\n");
+	/*динамическая инициализация мьютексов*/
+	for (int i = 0; i < 5; i++)
+		if (pthread_mutex_init(&store_mtx[i], NULL) != 0)
+			return 1;
+
 	/*заполнение магазинов*/
 	for (int i = 0; i < 5; i++)
 		/*кол-во товаров в диапазоне 1000 - 1200*/
-		stores[i] = (unsigned int) (1000 + rand() % 201);
+		stores[i] = (unsigned int) random(1000, 1200);
 
 	/*создание потока с погрузчиком*/
 	if (pthread_create(&loader_thread, NULL, loader, NULL) != 0)
@@ -114,12 +145,12 @@ int main(int argc, char* argv[])
 	/*создание потоков с покупателями*/
 	for (int i = 0; i < 3; i++)
 		/*потребности покупателей в диапазоне 3000 - 3500*/
-		if (pthread_create(&customer_thread[i], NULL, customer, (void *) (3000 + rand() % 501))  != 0)
+		if (pthread_create(&customer_thread[i], NULL, customer, (void*) random(3000, 3500)) != 0)
 			return 1;
 
 	/*переменная для хранения возвращаемого значения функции потока*/
 	void* res;
-	
+
 	/*присоединение потоков с покупателями*/
 	for (int i = 0; i < 3; i++)
 		if (pthread_join(customer_thread[i], &res) != 0)
@@ -133,7 +164,7 @@ int main(int argc, char* argv[])
 	stop = true;
 	if (pthread_join(loader_thread, &res) != 0)
 		return 1;
-	
+
 	printf("All customers met their needs. The program has finished\n");
 	sleep(5);
 	return 0;
